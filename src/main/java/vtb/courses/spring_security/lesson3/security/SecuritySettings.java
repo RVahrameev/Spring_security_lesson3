@@ -34,7 +34,6 @@ import java.util.Map;
 public class SecuritySettings {
     final String VK_OAUTH_CLIENT_ID = "52036067";
     final String OAUTH_REDIRECT_URL = "https://localhost/oauth/authorize";
-    int state = 21346;
 
     private static void  handleException(HttpServletRequest request, HttpServletResponse response, RequestRejectedException requestRejectedException) throws IOException, ServletException {
         System.out.println("Exception: " + requestRejectedException);
@@ -51,6 +50,9 @@ public class SecuritySettings {
 
         @Override
         public void commence(HttpServletRequest request, HttpServletResponse response, AuthenticationException authException) throws IOException {
+            Integer state = Integer.valueOf((int) (Math.random() * 899999 + 100000));
+            System.out.println("maked state: "+state);
+            request.getSession().setAttribute("auth_state", state.toString());
 //            response.setContentType("application/json;charset=UTF-8");
 //            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
 //            response.getWriter().write("{\"message\": \"Please log in to access this resource.\"}");
@@ -67,6 +69,8 @@ public class SecuritySettings {
         @Override
         public void doFilter(ServletRequest servletRequest, ServletResponse servletResponse, FilterChain filterChain) throws IOException, ServletException {
             System.out.println("session: " + ((HttpServletRequest)servletRequest).getSession().getId());
+            System.out.println("session auth_state:" + ((HttpServletRequest)servletRequest).getSession().getAttribute("auth_state"));
+
             Map<String,String[]> paramMap = servletRequest.getParameterMap();
             for (Map.Entry<String,String[]> el: servletRequest.getParameterMap().entrySet()) {
                 String[] values = el.getValue();
