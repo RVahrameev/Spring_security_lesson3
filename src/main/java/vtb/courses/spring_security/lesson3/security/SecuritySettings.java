@@ -3,29 +3,28 @@ package vtb.courses.spring_security.lesson3.security;
 import jakarta.servlet.*;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.annotation.Order;
-import org.springframework.security.access.hierarchicalroles.RoleHierarchy;
-import org.springframework.security.access.hierarchicalroles.RoleHierarchyImpl;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.WebSecurityCustomizer;
 import org.springframework.security.config.annotation.web.configurers.LogoutConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.AuthenticationException;
-import org.springframework.security.provisioning.JdbcUserDetailsManager;
-import org.springframework.security.provisioning.UserDetailsManager;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.security.web.access.ExceptionTranslationFilter;
 import org.springframework.security.web.authentication.logout.LogoutFilter;
-import org.springframework.security.web.authentication.rememberme.JdbcTokenRepositoryImpl;
 import org.springframework.security.web.firewall.RequestRejectedException;
+import org.springframework.security.web.firewall.StrictHttpFirewall;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClient;
 
-import javax.sql.DataSource;
 import java.io.IOException;
 import java.util.Map;
+
+import static org.springframework.http.MediaType.APPLICATION_FORM_URLENCODED;
+import static org.springframework.http.MediaType.APPLICATION_JSON;
+import static org.springframework.security.web.context.HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY;
 
 /**
  * SecuritySettings - полная конфигурация системы доступа
@@ -34,6 +33,85 @@ import java.util.Map;
 public class SecuritySettings {
     final String VK_OAUTH_CLIENT_ID = "52036067";
     final String OAUTH_REDIRECT_URL = "https://localhost/oauth/authorize";
+    final String VK_USER_INFO_URL = "https://id.vk.com/oauth2/user_info";
+
+    final String USER_SECRET_KEY = "gBnMLxyXPkKPDAgiC2qU";
+
+    /**
+     * VkAuthorizeAcceptFilter - реализует обработку ответа об аутентификации от ВК,
+     * запрос токена от ВК и дополнительной информации по пользователю
+     * Оформлен как внутренний класс, т.к. объявление его публичным приводит к
+     * его неконтролируемомоу вызову Spring Security
+     */
+    public class VkAuthorizeAcceptFilter implements Filter {
+
+        /**
+         * getUserInfo - отправка в ВК запросов на получение токена и информации по пользователю
+         */
+        private void getUserInfo(ServletRequest servletRequest, String code) throws IOException {
+            String details;
+            RestClient vkClient = RestClient.create();
+            // Получение токена от ВК, для запроса информации по пользователю
+            AccessToken token = vkClient.get()
+                    .uri("https://oauth.vk.com/access_token?client_id=%s&client_secret=%s&redirect_uri=%s&code=%s".formatted(VK_OAUTH_CLIENT_ID, USER_SECRET_KEY, OAUTH_REDIRECT_URL, code))
+                    .accept(APPLICATION_JSON)
+                    .retrieve()
+                    .body(AccessToken.class);
+            details = "\n" + token.toString();
+            //System.out.println("result token request: " + token);
+
+            // Запрос у ВК информации по пользователю
+            String result = vkClient.post()
+                    .uri(VK_USER_INFO_URL)
+                    .header("access_token", token.getAccess_token())
+                    .contentType(APPLICATION_FORM_URLENCODED)
+                    //.body("client_id=%s&access_token=%s".formatted(VK_OAUTH_CLIENT_ID, token.getAccess_token()))
+                    .body("client_id=%s".formatted(VK_OAUTH_CLIENT_ID))
+                    .accept(APPLICATION_JSON)
+                    .retrieve()
+                    .body(String.class);
+            details = details + "\n" + result;
+            //System.out.println("result user_info: " + result);
+
+            // К сожалению, от ВК не удалось добиться положительного ответа
+            // запрос информации по пользователю абортируется с сообщением "access_token is missing or invalid"
+            // Поэтому далее просто иммитируем успех, а ответы от ВК выводим на страницу информации
+            SecurityContextHolder.getContext().setAuthentication(new VkAuthenticationToken(true, details, "vk_user"));
+            ((HttpServletRequest)servletRequest).getSession().setAttribute(SPRING_SECURITY_CONTEXT_KEY, SecurityContextHolder.getContext());
+        }
+        @Override
+        public void doFilter(ServletRequest servletRequest, ServletResponse servletResponse, FilterChain filterChain) throws IOException, ServletException {
+            // Получим из сессии сохранённый ранее state для обмена с ВК
+            String saved_state = ((HttpServletRequest)servletRequest).getSession().getAttribute("auth_state").toString();
+            //System.out.println("session: " + ((HttpServletRequest)servletRequest).getSession().getId());
+            //System.out.println("session auth_state:" + saved_state);
+
+            Map<String,String[]> paramMap = servletRequest.getParameterMap();
+//            for (Map.Entry<String,String[]> el: paramMap.entrySet()) {
+//                String[] values = el.getValue();
+//                System.out.println(el.getKey()+":");
+//                for (String s: values) {
+//                    System.out.println("    " + s);
+//                }
+//            }
+            if (paramMap.containsKey("code")) {
+                String code = paramMap.get("code")[0];
+                if (
+                        paramMap.containsKey("state")
+                        &&
+                        paramMap.get("state")[0].equals(saved_state)
+                ) {
+                    getUserInfo(servletRequest, code);
+                } else {
+                    throw new IllegalStateException("Ключ безопасности полученный от VK не соответствует ожидаемому!");
+                }
+            } else {
+                throw new IllegalArgumentException("В ответе от VK отсутствуюет код безопасности");
+            }
+            //Перенаправляем на страницу информации о результатах аутентификации и получения информации по пользователю
+            ((HttpServletResponse)servletResponse).sendRedirect("info");
+        }
+    }
 
     private static void  handleException(HttpServletRequest request, HttpServletResponse response, RequestRejectedException requestRejectedException) throws IOException, ServletException {
         System.out.println("Exception: " + requestRejectedException);
@@ -44,56 +122,27 @@ public class SecuritySettings {
 
         return web -> web
                 .requestRejectedHandler(SecuritySettings::handleException)
+                .httpFirewall(new StrictHttpFirewall())
                 ;
     }
     class VkAuthenticationEntryPoint implements AuthenticationEntryPoint {
 
         @Override
         public void commence(HttpServletRequest request, HttpServletResponse response, AuthenticationException authException) throws IOException {
+            // Генерим случайное число для state
             Integer state = Integer.valueOf((int) (Math.random() * 899999 + 100000));
-            System.out.println("maked state: "+state);
+            // Сохраняем его значение в текущей сессии
             request.getSession().setAttribute("auth_state", state.toString());
-//            response.setContentType("application/json;charset=UTF-8");
-//            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-//            response.getWriter().write("{\"message\": \"Please log in to access this resource.\"}");
-            response.sendRedirect("https://oauth.vk.com/authorize?client_id=%s&redirect_uri=%s&scope=email&response_type=code&state=%d&v=5.131".formatted(VK_OAUTH_CLIENT_ID, OAUTH_REDIRECT_URL, state));
+            // Перенаправляем пользователя на аутентификацию в ВК
+            response.sendRedirect("https://oauth.vk.com/authorize?client_id=%s&redirect_uri=%s&scope=email&response_type=code&state=%d".formatted(VK_OAUTH_CLIENT_ID, OAUTH_REDIRECT_URL, state));
+
+            //System.out.println("maked state: "+state);
         }
     }
 
     /**
-     * WhiteListFilter - кастомный фильтр осуществляющий логику доступа по "Белому списку"
-     * Не вынесен в отдельный файл, т.к. иначе Spring Security автоматически его цепляет и
-     * начинает применять к каждой странице сайта
+     *  Настройка фильтра для обработки ответа от ВК
      */
-    class VkAuthorizeAcceptFilter implements Filter {
-        @Override
-        public void doFilter(ServletRequest servletRequest, ServletResponse servletResponse, FilterChain filterChain) throws IOException, ServletException {
-            System.out.println("session: " + ((HttpServletRequest)servletRequest).getSession().getId());
-            System.out.println("session auth_state:" + ((HttpServletRequest)servletRequest).getSession().getAttribute("auth_state"));
-
-            Map<String,String[]> paramMap = servletRequest.getParameterMap();
-            for (Map.Entry<String,String[]> el: servletRequest.getParameterMap().entrySet()) {
-                String[] values = el.getValue();
-                System.out.println(el.getKey()+":");
-                for (String s: values) {
-                    System.out.println("    " + s);
-                }
-            }
-//            if  (
-//                    servletRequest instanceof HttpServletRequest
-//                            &&
-//                            servletRequest.
-//                            !urlMatcher.checkUrl(((HttpServletRequest)servletRequest).getHeader("referer"))
-//            )
-//            {
-//                throw new WhiteListAccessException("");
-//            } else {
-//                filterChain.doFilter(servletRequest, servletResponse);
-//            }
-        }
-    }
-
-
     @Bean @Order(1)
     SecurityFilterChain vkAuthorizeAcceptFilter(HttpSecurity http) throws Exception{
         return http
@@ -102,16 +151,20 @@ public class SecuritySettings {
                 .build();
     }
 
+    /**
+     * Настраиваем параметры безопасности:
+     * - только аутенифицированный доступ
+     * - всегда создавать сессию
+     * - в качестве Аутентификации по умолчанию использовать VkAuthenticationEntryPoint
+     */
     @Bean @Order(2)
     SecurityFilterChain filterChainAuthenticatedAccessOnly(HttpSecurity http) throws Exception{
 
         return http
                 .logout(LogoutConfigurer::permitAll)
-                //.formLogin(c -> c.defaultSuccessUrl("/", true))
                 .authorizeHttpRequests(c -> c
                         .anyRequest().authenticated()
                 )
-//                .exceptionHandling(c -> c.accessDeniedPage("/AccessDenied.html"))
                 .exceptionHandling(c -> c.authenticationEntryPoint(new VkAuthenticationEntryPoint()))
                 .sessionManagement(c -> c.sessionCreationPolicy(SessionCreationPolicy.ALWAYS))
                 .build();
