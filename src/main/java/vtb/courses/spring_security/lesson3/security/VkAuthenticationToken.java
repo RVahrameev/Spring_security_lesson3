@@ -12,11 +12,13 @@ public class VkAuthenticationToken implements Authentication {
     private boolean isAuthenticated;
     private String details;
     private String userName;
+    private VkAccessToken vkAccessToken;
 
-    public VkAuthenticationToken(boolean isAuthenticated, String details, String userName) {
+    public VkAuthenticationToken(boolean isAuthenticated, String details, String userName, VkAccessToken vkAccessToken) {
         this.isAuthenticated = isAuthenticated;
         this.details = details;
         this.userName = userName;
+        this.vkAccessToken = vkAccessToken;
     }
 
     @Override
